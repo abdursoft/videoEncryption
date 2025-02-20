@@ -13,6 +13,13 @@ return new class extends Migration
     {
         Schema::create('videos', function (Blueprint $table) {
             $table->id();
+            $table->string('token')->unique();
+            $table->string('video_path');
+            $table->string('segment_path')->nullable();
+            $table->string('bucket_path')->nullable();
+            $table->longText('hls')->nullable();
+            $table->longText('poster')->nullable();
+            $table->enum('uploaded',['1','0'])->default('0');
             $table->timestamps();
         });
     }

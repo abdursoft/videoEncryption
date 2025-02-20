@@ -3,20 +3,44 @@
 namespace App\Http\Controllers;
 
 use App\Jobs\ProcessVideoReverb;
-use Aws\S3\S3Client;
+use App\Models\Video;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Storage;
 
 class VideoController extends Controller
 {
+
+    // show the video list
+    public function index()
+    {
+        $videos = Video::paginate(10);
+        return view('dashboard', compact('videos'));
+    }
+
+    // show the upload form
+    public function create()
+    {
+        return view('video.upload');
+    }
+
+    // show the video player
+    public function player($key){
+        return view('player', compact('key'));
+    }
+
     public function upload(Request $request)
     {
         $request->validate([
             'video' => 'required|file|mimes:mp4,mkv,avi|max:102400',
+            'label' => 'required|array'
         ]);
 
         // Store the uploaded file in public storage
         $filePath = $request->file('video')->store('videos', 'public');
+
+        // real video path
+        $video = storage_path("app/public/{$filePath}");
 
         // Generate a unique ID for HLS processing
         $index = uniqid();
@@ -38,17 +62,24 @@ class VideoController extends Controller
         } else {
             $keyUri = $request->root() . Storage::url("hls/$index/key/enc.key");
         }
+
         Storage::disk('public')->put("hls/$index/key/enc.keyinfo", "$keyUri\n$keyPath\n$iv");
 
-        // Get video duration
-        $duration = $this->getVideoDuration(storage_path("app/public/{$filePath}"));
+        Video::create([
+            'token'      => $index,
+            'video_path' => $filePath,
+        ]);
 
         // Dispatch the processing job with file path instead of UploadedFile object
-        ProcessVideoReverb::dispatch(storage_path("app/public/{$filePath}"), $index, $keyInfoPath);
+        ProcessVideoReverb::dispatch($video, $index, $keyInfoPath, $request->input('domain'), $request->input('label'));
+
+        // Start the queue worker automatically
+        // Artisan::call('queue:work --timeout=1200');
 
         return response()->json(['message' => 'Video is processing.']);
     }
 
+    // Get master m3u8 or directories
     public function getMasterPlaylist($videoId)
     {
         $disk = Storage::disk('r2');
@@ -61,14 +92,15 @@ class VideoController extends Controller
         $masterContent = $disk->get($masterPlaylistPath);
 
         // Replace relative paths with Laravel routes
-        $modifiedMaster = preg_replace_callback('/^(low|mid|high|fullHd|2k|4k|8k|key)\/index\.m3u8|.*\/enc\.key$/m', function ($matches) use ($videoId) {
+        $modifiedMaster = preg_replace_callback('/^(lw|md|sd|hd|2k|4k|8k|key)\/index\.m3u8|.*\/enc\.key$/m', function ($matches) use ($videoId) {
             return route('get.hls.file', ['videoId' => $videoId, 'file' => $matches[0]]);
         }, $masterContent);
 
         return response($modifiedMaster)->header("Content-Type", "application/x-mpegURL");
     }
 
-    public function getHlsFile($videoId, $file,$ext=null)
+    // Get hls or key file stream
+    public function getHlsFile($videoId, $file, $ext = null)
     {
         $disk = Storage::disk('r2');
         $filePath = "{$videoId}/{$file}/{$ext}";
@@ -79,9 +111,10 @@ class VideoController extends Controller
         return $disk->get($filePath);
 
         return response($disk->get($filePath))
-        ->header("Content-Type", $file == 'enc.key' ? "application/octet-stream" : "application/x-mpegURL");
+            ->header("Content-Type", $file == 'enc.key' ? "application/octet-stream" : "application/x-mpegURL");
     }
 
+    // Upload hls directory and files in R2 storage
     public function uploadToR2($index, $localPath = null)
     {
         // Set the initial path if not provided
@@ -112,9 +145,10 @@ class VideoController extends Controller
                 }
             }
         }
-        return "OK";
+        return redirect()->route('video.list')->with('success',"Video successfully uploaded in R2 Storage");
     }
 
+    // Get video duration by ffmpeg
     private function getVideoDuration($filePath)
     {
         $ffmpegOutput = shell_exec("ffmpeg -i \"$filePath\" 2>&1");
@@ -129,5 +163,41 @@ class VideoController extends Controller
         }
 
         return 3600;
+    }
+
+    // Delete from local
+    public function deleteFromLocal($index){
+        $path = storage_path("app/public/hls/$index");
+        if(is_dir($path)){
+            Storage::deleteDirectory("hls/$index");
+        }
+        Video::where('token',$index)->delete();
+        return redirect()->route('video.list')->with('success',"Video successfully remove from Storage");
+    }
+
+    // Delete form R2 storage
+    public function deleteFromR2($index)
+    {
+        $disk = Storage::disk('r2');
+
+        // Get all files inside the folder
+        $files = $disk->allFiles($index);
+        $directories = $disk->allDirectories($index);
+
+        // Delete all files and folders
+        $disk->delete($files);
+        foreach ($directories as $dir) {
+            $disk->deleteDirectory($dir);
+        }
+
+        // Finally, delete the main folder
+        $disk->deleteDirectory($index);
+
+
+        // Update the model
+        Video::where('token',$index)->update([
+            'uploaded' => '0',
+        ]);
+        return redirect()->route('video.list')->with('success',"Video successfully remove from R2 Storage");
     }
 }
