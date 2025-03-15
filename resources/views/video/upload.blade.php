@@ -31,6 +31,13 @@
                             <x-input-error :messages="$errors->get('video_file')" class="mt-2" />
                         </div>
 
+                        <!-- Storage selection -->
+                        <select name="storage" id="storage" class="w-full my-2 rounded-md !bg-black-500 selected:text-black-500">
+                            <option value="">No</option>
+                            <option value="s3">AWS S3</option>
+                            <option value="r2">Cloudflare R2</option>
+                        </select>
+
                         {{-- video encrypt label  --}}
                         <div class="mt-4">
                             <p class="text-white mb-2">Select video labels</p>

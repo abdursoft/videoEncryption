@@ -5,12 +5,10 @@ namespace App\Http\Controllers;
 use App\Jobs\ProcessVideoReverb;
 use App\Models\Video;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Storage;
 
 class VideoController extends Controller
 {
-
     // show the video list
     public function index()
     {
@@ -26,7 +24,9 @@ class VideoController extends Controller
 
     // show the video player
     public function player($key){
-        return view('player', compact('key'));
+        $token = bin2hex(random_bytes(16));
+        session(['playback_token' => $token]);
+        return view('player', compact('key','token'));
     }
 
     public function upload(Request $request)
@@ -58,9 +58,9 @@ class VideoController extends Controller
 
         // Create the keyinfo file
         if (! empty($request->input('domain'))) {
-            $keyUri = trim($request->input('domain'), '/') . "/$index/key/enc.key";
+            $keyUri = "$index/key/enc.key";
         } else {
-            $keyUri = $request->root() . Storage::url("hls/$index/key/enc.key");
+            $keyUri = ("$index/key/enc.key");
         }
 
         Storage::disk('public')->put("hls/$index/key/enc.keyinfo", "$keyUri\n$keyPath\n$iv");
@@ -68,10 +68,11 @@ class VideoController extends Controller
         Video::create([
             'token'      => $index,
             'video_path' => $filePath,
+            'storage' => $request->input('storage')
         ]);
 
         // Dispatch the processing job with file path instead of UploadedFile object
-        ProcessVideoReverb::dispatch($video, $index, $keyInfoPath, $request->input('domain'), $request->input('label'));
+        ProcessVideoReverb::dispatch($video, $index, $keyInfoPath, $request->input('domain'), $request->input('label'),$request->input('storage'));
 
         // Start the queue worker automatically
         // Artisan::call('queue:work --timeout=1200');
@@ -82,70 +83,81 @@ class VideoController extends Controller
     // Get master m3u8 or directories
     public function getMasterPlaylist($videoId)
     {
-        $disk = Storage::disk('r2');
-        $masterPlaylistPath = "{$videoId}/master.m3u8";
+        $video = Video::find($videoId);
+        if($video){
+            $disk = Storage::disk($video->storage);
+            $masterPlaylistPath = "{$video->token}/master.m3u8";
 
-        if (!$disk->exists($masterPlaylistPath)) {
-            return response()->json(['error' => 'File not found'], 404);
+            if (!$disk->exists($masterPlaylistPath)) {
+                return response()->json(['error' => 'File not found'], 404);
+            }
+
+            $masterContent = $disk->get($masterPlaylistPath);
+
+            // Replace relative paths with Laravel routes
+            $modifiedMaster = preg_replace_callback('/^(lw|md|sd|hd|2k|4k|8k|key)\/index\.m3u8|.*\/enc\.key$/m', function ($matches) use ($videoId) {
+                return route('get.hls.file', ['videoId' => $videoId, 'file' => $matches[0]]);
+            }, $masterContent);
+
+            return response($modifiedMaster)->header("Content-Type", "application/x-mpegURL");
         }
-
-        $masterContent = $disk->get($masterPlaylistPath);
-
-        // Replace relative paths with Laravel routes
-        $modifiedMaster = preg_replace_callback('/^(lw|md|sd|hd|2k|4k|8k|key)\/index\.m3u8|.*\/enc\.key$/m', function ($matches) use ($videoId) {
-            return route('get.hls.file', ['videoId' => $videoId, 'file' => $matches[0]]);
-        }, $masterContent);
-
-        return response($modifiedMaster)->header("Content-Type", "application/x-mpegURL");
     }
+
 
     // Get hls or key file stream
     public function getHlsFile($videoId, $file, $ext = null)
     {
-        $disk = Storage::disk('r2');
-        $filePath = "{$videoId}/{$file}/{$ext}";
+        $video = Video::find($videoId);
+        if($video){
+            $disk = Storage::disk($video->storage);
+            $filePath = "{$video->token}/{$file}/{$ext}";
 
-        if (!$disk->exists($filePath)) {
-            return response()->json(['error' => 'File not found'], 404);
+            if (!$disk->exists($filePath)) {
+                return response()->json(['error' => 'File not found'], 404);
+            }
+            return $disk->get($filePath);
+
+            return response($disk->get($filePath))
+                ->header("Content-Type", $file == 'enc.key' ? "application/octet-stream" : "application/x-mpegURL");
         }
-        return $disk->get($filePath);
-
-        return response($disk->get($filePath))
-            ->header("Content-Type", $file == 'enc.key' ? "application/octet-stream" : "application/x-mpegURL");
     }
 
     // Upload hls directory and files in R2 storage
     public function uploadToR2($index, $localPath = null)
     {
-        // Set the initial path if not provided
-        if ($localPath === null) {
-            $localPath = storage_path("app/public/hls/$index");
-        }
+        $video = Video::find($index);
 
-        // Scan the directory for files and subdirectories
-        $files = scandir($localPath);
+        if($video){
+            // Set the initial path if not provided
+            if ($localPath === null) {
+                $localPath = storage_path("app/public/hls/$video->token");
+            }
+            // Scan the directory for files and subdirectories
+            $files = scandir($localPath);
 
-        foreach ($files as $file) {
-            // Skip the current and parent directory indicators
-            if ($file !== "." && $file !== "..") {
-                // Construct the full path for the current file or directory
-                $fullPath = "$localPath/$file";
+            foreach ($files as $file) {
+                // Skip the current and parent directory indicators
+                if ($file !== "." && $file !== "..") {
+                    // Construct the full path for the current file or directory
+                    $fullPath = "$localPath/$file";
 
-                // Check if the current item is a directory
-                if (is_dir($fullPath)) {
-                    // Recursively call the function for subdirectories
-                    $this->uploadToR2($index, $fullPath);
-                } else {
-                    // Create a relative path to preserve directory structure in R2
-                    // Remove the base path for the index and prepend the index itself
-                    $relativePath = $index . '/' . str_replace(storage_path("app/public/hls/$index/"), '', $fullPath);
+                    // Check if the current item is a directory
+                    if (is_dir($fullPath)) {
+                        // Recursively call the function for subdirectories
+                        $this->uploadToR2($index, $fullPath);
+                    } else {
+                        // Create a relative path to preserve directory structure in R2
+                        // Remove the base path for the index and prepend the index itself
+                        $relativePath = $video->token . '/' . str_replace(storage_path("app/public/hls/$video->token/"), '', $fullPath);
 
-                    // Upload the file to R2 storage, preserving the directory structure
-                    Storage::disk('r2')->put($relativePath, file_get_contents($fullPath));
+                        // Upload the file to R2 storage, preserving the directory structure
+                        Storage::disk($video->storage)->put($relativePath, file_get_contents($fullPath));
+                    }
                 }
             }
+            return redirect()->route('video.list')->with('success',"Video successfully uploaded in R2 Storage");
         }
-        return redirect()->route('video.list')->with('success',"Video successfully uploaded in R2 Storage");
+
     }
 
     // Get video duration by ffmpeg
@@ -176,28 +188,31 @@ class VideoController extends Controller
     }
 
     // Delete form R2 storage
-    public function deleteFromR2($index)
+    public function deleteFromR2($videoId)
     {
-        $disk = Storage::disk('r2');
+        $video = Video::where('token',$videoId)->first();
+        if($video){
+            $disk = Storage::disk($video->storage);
 
-        // Get all files inside the folder
-        $files = $disk->allFiles($index);
-        $directories = $disk->allDirectories($index);
+            // Get all files inside the folder
+            $files = $disk->allFiles($video->token);
+            $directories = $disk->allDirectories($video->token);
 
-        // Delete all files and folders
-        $disk->delete($files);
-        foreach ($directories as $dir) {
-            $disk->deleteDirectory($dir);
+            // Delete all files and folders
+            $disk->delete($files);
+            foreach ($directories as $dir) {
+                $disk->deleteDirectory($dir);
+            }
+
+            // Finally, delete the main folder
+            $disk->deleteDirectory($video->token);
+
+
+            // Update the model
+            Video::where('token',$video->token)->update([
+                'uploaded' => '0',
+            ]);
+            return redirect()->route('video.list')->with('success',"Video successfully remove from R2 Storage");
         }
-
-        // Finally, delete the main folder
-        $disk->deleteDirectory($index);
-
-
-        // Update the model
-        Video::where('token',$index)->update([
-            'uploaded' => '0',
-        ]);
-        return redirect()->route('video.list')->with('success',"Video successfully remove from R2 Storage");
     }
 }

@@ -15,6 +15,7 @@ return new class extends Migration
             $table->id();
             $table->string('token')->unique();
             $table->string('video_path');
+            $table->string('storage')->nullable();
             $table->string('segment_path')->nullable();
             $table->string('bucket_path')->nullable();
             $table->longText('hls')->nullable();

@@ -21,16 +21,18 @@ class ProcessVideoReverb implements ShouldQueue
     protected $keyPath;
     protected $domain;
     protected $labels;
+    protected $storage;
 
     public $timeout = 600; // 10 minutes
 
-    public function __construct($path, $index, $keyPath,$domain,$labels)
+    public function __construct($path, $index, $keyPath,$domain,$labels,$storage)
     {
         $this->path    = $path;
         $this->index   = $index;
         $this->keyPath = $keyPath;
         $this->domain = $domain;
         $this->labels = $labels;
+        $this->storage = $storage;
     }
 
     public function handle()
@@ -39,8 +41,8 @@ class ProcessVideoReverb implements ShouldQueue
         $resolutions = [
             ['name' => 'lw', 'resolution' => '426x240', 'bitrate' => '800k'],       // 240p
             ['name' => 'md', 'resolution' => '640x360', 'bitrate' => '1200k'],      // 360p
-            ['name' => 'sd', 'resolution' => '1280x720', 'bitrate' => '2500k'],    // 720p
-            ['name' => 'hd', 'resolution' => '1920x1080', 'bitrate' => '5000k'], // 1080p
+            ['name' => 'sd', 'resolution' => '1280x720', 'bitrate' => '2500k'],     // 720p
+            ['name' => 'hd', 'resolution' => '1920x1080', 'bitrate' => '5000k'],    // 1080p
             ['name' => '2k', 'resolution' => '2560x1440', 'bitrate' => '8000k'],     // 1440p (2K)
             ['name' => '4k', 'resolution' => '3840x2160', 'bitrate' => '16000k'],    // 2160p (4K UHD)
             ['name' => '8k', 'resolution' => '7680x4320', 'bitrate' => '35000k'],    // 4320p (8K UHD)
@@ -102,7 +104,7 @@ class ProcessVideoReverb implements ShouldQueue
         $this->posterThumbnail($this->path,$this->index,$this->domain);
 
         // Upload to R2
-        $this->uploadToR2($this->index);
+        $this->uploadToCloud($this->index);
 
         // unlink the video upload
         if (file_exists($this->path)) {
@@ -132,14 +134,15 @@ class ProcessVideoReverb implements ShouldQueue
     }
 
     // upload in cloud flare r2
-    private function uploadToR2($index, $localPath = null)
+    private function uploadToCloud($index, $localPath = null)
     {
         // Set the initial path if not provided
         if ($localPath === null) {
             $localPath = storage_path("app/public/hls/$index");
         }
 
-        // Scan the directory for files and subdirectories
+        if(!empty($this->storage)){
+            // Scan the directory for files and subdirectories
         $files = scandir($localPath);
 
         foreach ($files as $file) {
@@ -151,16 +154,17 @@ class ProcessVideoReverb implements ShouldQueue
                 // Check if the current item is a directory
                 if (is_dir($fullPath)) {
                     // Recursively call the function for subdirectories
-                    $this->uploadToR2($index, $fullPath);
+                    $this->uploadToCloud($index, $fullPath);
                 } else {
                     // Create a relative path to preserve directory structure in R2
                     // Remove the base path for the index and prepend the index itself
                     $relativePath = $index . '/' . str_replace(storage_path("app/public/hls/$index/"), '', $fullPath);
 
                     // Upload the file to R2 storage, preserving the directory structure
-                    Storage::disk('r2')->put($relativePath, file_get_contents($fullPath));
+                    Storage::disk($this->storage)->put($relativePath, file_get_contents($fullPath));
                 }
             }
+        }
         }
     }
 }

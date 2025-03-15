@@ -4,14 +4,26 @@
             <div class="bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg">
                 <div class="container vh-100">
                     <div class="d-flex align-items-center justify-content-center w-100 vh-100">
-                        <div id="player"></div>
+                        <div id="player"><video src="" id="video" width="400" height="350" controls ></video></div>
                     </div>
                 </div>
+                <script>
+                    async function getSignedMaster() {
+                        const response = await fetch(`/hls/index/md`);
+                        if (!response.ok) {
+                            console.error("Failed to fetch signed master.m3u8");
+                            return null;
+                        }
+                        return URL.createObjectURL(await response.blob()); // Convert response to blob URL
+                    }
+                </script>
+
                 <script type="module">
                     import Player from 'https://cdn.abdursoft.com/video/beta.js'
+                    let response = await getSignedMaster();
                     const video = Player({
                         id: 'player',
-                        src: "http://127.0.0.1:8000/video/{{ $key }}/master.m3u8",
+                        src: `/master/{{$key}}?type=.m3u8&token={{$token}}`,
                         poster: 'https://i.ytimg.com/vi/ECiqd98bGLo/hqdefault.jpg?sqp=-oaymwEbCKgBEF5IVfKriqkDDggBFQAAiEIYAXABwAEG&rs=AOn4CLDH2-SFnWbuoOlWXqT5jzSl9UtK3w',
                         encrypt: false,
                         videoDecryption: false,
@@ -24,8 +36,6 @@
                                 content: "x",
                             }
                         },
-                        // loader:[1,'yellow'],
-                        // iconColor:'yellow',
                         backward: true,
                         forward: true,
                         share: true,
@@ -143,8 +153,29 @@
                         lang: "EN",
                         tooltip: true
                     });
-                    video.next('https://youtu.be/CSXercwdqsI');
                 </script>
+
+                {{-- <script>
+                    async function getSignedMaster() {
+                        const response = await fetch(`/video/signed-master/master.m3u8`);
+                        if (!response.ok) {
+                            console.error("Failed to fetch signed master.m3u8");
+                            return null;
+                        }
+                        console.log(response);
+                        return URL.createObjectURL(await response.blob()); // Convert response to blob URL
+                    }
+
+                    async function playVideo() {
+                        const signedM3U8Url = await getSignedMaster();
+                        if (!signedM3U8Url) return;
+
+                        var video = document.getElementById('video');
+                        video.src = signedM3U8Url; // Load signed master.m3u8 URL
+                    }
+
+                    playVideo();
+                </script> --}}
             </div>
         </div>
     </div>
